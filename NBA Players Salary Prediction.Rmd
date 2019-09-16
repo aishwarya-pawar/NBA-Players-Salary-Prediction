@@ -1,0 +1,451 @@
+---
+title: "nba"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r}
+nba = read.csv("C:/Users/bkase/Downloads/nba_data_raw.csv")
+nba = na.omit(nba)
+nba = subset(nba, select=-c(Player))
+```
+
+
+### Linear Regression Model(train:test = 0.8:0.2)
+
+#### Forward
+
+```{r}
+library(leaps)
+set.seed(1)
+
+train=sample(c(TRUE, FALSE), nrow(nba), replace=TRUE, prob=c(0.8,0.2))
+test=(!train)
+regfit.best = regsubsets(Total_salary~., data=nba[train,], nvmax=47,method='forward')
+test.mat = model.matrix(Total_salary~., data=nba[test,])
+val.errors=rep(NA,47)
+for (i in 1:47){
+  coefi=coef(regfit.best, id=i)
+  pred=test.mat[,names(coefi)]%*%coefi
+  val.errors[i]=sqrt(mean((nba$Total_salary[test]-pred)^2))
+}
+print(paste("Test Dataset Minimum RMSE:", round(min(val.errors),2)))
+coef(regfit.best ,which.min(val.errors))
+```
+
+
+#### Backward
+
+```{r}
+library(leaps)
+set.seed(1)
+train=sample(c(TRUE, FALSE), nrow(nba), replace=TRUE, prob=c(0.8,0.2))
+test=(!train)
+regfit.best = regsubsets(Total_salary~., data=nba[train,], nvmax=47,method='backward')
+test.mat = model.matrix(Total_salary~., data=nba[test,])
+val.errors=rep(NA,47)
+for (i in 1:47){
+  coefi=coef(regfit.best, id=i)
+  pred=test.mat[,names(coefi)]%*%coefi
+  val.errors[i]=sqrt(mean((nba$Total_salary[test]-pred)^2))
+}
+print(paste("Test Dataset Minimum RMSE:", round(min(val.errors),2)))
+coef(regfit.best ,which.min(val.errors))
+
+```
+
+### PCR
+```{r}
+pcr_model <- pcr(Total_salary~., data = nba, scale = TRUE, validation = "CV")
+validationplot(pcr_model)
+predplot(pcr_model, ncomp=17)
+
+pcr_pred <- predict(pcr_model, nba[test,], ncomp = 17)
+sqrt(mean((pcr_pred - nba$Total_salary[test])^2))
+```
+
+### RIDGE
+```{r}
+#Ridge regression
+
+#Defining x and y 
+x=model.matrix(Total_salary~.,nba)
+y=nba$Total_salary
+
+library(glmnet)
+grid=10^seq(10,-2,length=100)
+#nba_mod=glmnet(x,y,alpha=0, lambda=grid)
+```
+
+```{r}
+#Splitting into train and test
+set.seed(1)
+sample_size = floor(0.75*nrow(nba))
+train=sample(seq_len(nrow(nba)),size=sample_size)
+nba_tr=nba[train,] #286 observations
+nba_ts=nba[-train,] #92 observations
+y_test=y[-train]
+```
+
+```{r}
+#Choosing the best lambda
+set.seed(1)
+cv_out=cv.glmnet(x[train,],y[train],alpha=0)
+plot (cv_out)
+bestlam=cv_out$lambda.min
+bestlam
+
+#Training the model
+nba_mod<-glmnet(x[train,],y[train],alpha=0,lambda=grid,thresh=1e-12)
+
+#Predicting on OOS using bestlam
+nba_pred<-predict(nba_mod,s=bestlam,newx=x[-train,])
+sqrt(mean((nba_pred-y_test)^2))
+#5,488,660
+```
+
+#LASSO REGRESSION
+```{r}
+#Choosing the best lambda
+set.seed(1)
+cv_out_l=cv.glmnet(x[train,],y[train],alpha=1)
+plot (cv_out_l)
+bestlam_l=cv_out_l$lambda.min
+bestlam_l
+
+#Training the model
+nba_mod_l<-glmnet(x[train,],y[train],alpha=1,lambda=grid,thresh=1e-12)
+
+#Predicting on OOS using bestlam
+nba_pred_l<-predict(nba_mod_l,s=bestlam_l,newx=x[-train,])
+sqrt(mean((nba_pred_l-y_test)^2))
+#5,456,389
+```
+
+#EDA TO REDUCE VARIANCE IN DATA FOR BETTER PREDICTIONS. 
+#K-MEANS CLUSTERING 
+```{r}
+#Loading packages:
+library(factoextra)
+library(NbClust)
+library(FunCluster)
+library(ggplot2)
+library(dplyr)
+library(purrr)
+library(tidyverse)
+```
+```{r}
+#Standardizing data:
+nba_clus<-scale(nba_tr[1:47])
+```
+
+```{r}
+#Optimal number of clusters
+wss<-function(k) {
+  kmeans(nba_clus,k,nstart = 10)$tot.withinss
+}
+
+k.values<-1:15
+wss_values<-map_dbl(k.values,wss)
+plot(k.values,wss_values,type='b',pch=19,frame=FALSE,xlab="Number of clusters K",ylab="Total within-clusters sum of squares")
+```
+
+```{r}
+#k-means code to obtain clusters
+set.seed(1)
+clusters<-kmeans(nba_clus,5)
+print (clusters)
+fviz_cluster(clusters,data=nba_clus) 
+```
+```{r}
+#Splitting into individual datasets
+nba_clus_summ<- nba_tr %>% mutate(Cluster=clusters$cluster) %>% group_by(Cluster) %>% summarise_all("mean")
+nba_clus_nbr<- nba_tr %>% mutate(Cluster=clusters$cluster)
+```
+
+```{r}
+#Training models by cluster using the shortlisted variables obtained from initial linear regression
+clus1_sub<-filter(nba_clus_nbr, Cluster==1)
+clus1_mod<-lm(Total_salary~X.Steal_Percentage +X.Block_Percentage+X.Turnover_Percentage+X.Win_Shares_Per_48_Minutes+X.Value_over_Replacement_Player +X.Games_Started+X.Minutes_Played_Per_Game+X.Games +Age,clus1_sub)
+summary(clus1_mod)
+```
+#Best Adjusted R squared obtained is 48% and residual standard error is 6,616,000 with 2 clusters
+# 48% and 6,016,000
+# 35% and 4,566,000
+# 28% and 4,649,000
+
+```{r}
+
+clus2_sub<-filter(nba_clus_nbr, Cluster==2)
+clus2_mod<-lm(Total_salary~X.Steal_Percentage +X.Block_Percentage+X.Turnover_Percentage+X.Win_Shares_Per_48_Minutes+X.Value_over_Replacement_Player +X.Games_Started+X.Minutes_Played_Per_Game+X.Games +Age,clus2_sub)
+summary(clus2_mod)
+#RSE - 3,259,000
+# 19% 
+```
+
+```{r}
+clus3_sub<-filter(nba_clus_nbr, Cluster==3)
+clus3_mod<-lm(Total_salary~X.Steal_Percentage +X.Block_Percentage+X.Turnover_Percentage+X.Win_Shares_Per_48_Minutes+X.Value_over_Replacement_Player +X.Games_Started+X.Minutes_Played_Per_Game+X.Games +Age,clus3_sub)
+summary(clus3_mod)
+#RSE - 5,328,000
+# 35.5% 
+```
+
+```{r}
+clus4_sub<-filter(nba_clus_nbr, Cluster==4)
+clus4_mod<-lm(Total_salary~X.Steal_Percentage +X.Block_Percentage+X.Turnover_Percentage+X.Win_Shares_Per_48_Minutes+X.Value_over_Replacement_Player +X.Games_Started+X.Minutes_Played_Per_Game+X.Games +Age,clus4_sub)
+summary(clus4_mod)
+#RSE - 6,160,000
+# 49.5% 
+```
+```{r}
+clus5_sub<-filter(nba_clus_nbr, Cluster==5)
+clus5_mod<-lm(Total_salary~X.Steal_Percentage +X.Block_Percentage+X.Turnover_Percentage+X.Win_Shares_Per_48_Minutes+X.Value_over_Replacement_Player +X.Games_Started+X.Minutes_Played_Per_Game+X.Games +Age,clus5_sub)
+summary(clus5_mod)
+#RSE - 7,866,000
+# 50% 
+```
+
+### Bagging
+```{r}
+library(randomForest)
+newdata2 <- subset(nba, select = -c(X.Defensive_Rebound_Percentage, X.Total_Rebound_Percentage,X.Block_Percentage,X.Defensive_Box_Plus.Minus,X.Total_Rebounds_Per_Game, X.Assists_Per_Game,X.Assist_Percentage,X.Steal_Percentage,X.Turnover_Percentage))
+newdata3 <- subset(newdata2, select = -c(X.Field_Goal_Percentage,X.True_Shooting_Percentage))
+newdata5 <- subset(newdata3, select = -c(X.3.Point_Field_Goals_Per_Game,X.3.Point_Field_Goal_Attempts_Per_Game,X.Steals_Per_Game,X.Offensive_Rebound_Percentage,X.Usage_Percentage))
+# There are multiple data sets here from different stages of choosing my variables- they build off of the previous data sets,
+# I just did not rewrite them into one dataset
+set.seed(2)
+train5 <- sample(1:nrow(newdata5), nrow(newdata5)*.8)
+bagging5 <- randomForest(Total_salary~.-X.Free_Throw_Attempt_Rate, data = newdata5, subset = train5, mtry = 30, importance = TRUE)
+bagging5
+yhat.bag5 <- predict(bagging5, newdata = newdata5[-train5,])
+sqrt(mean((yhat.bag5 - newdata5[-train5,'Total_salary'])^2))
+plot(bagging5)
+```
+
+### Random Forest
+```{r}
+brandon=list()
+for(i in 1:31)
+{
+  rf.brandon <- randomForest(Total_salary~., data = newdata5, subset = train, mtry = i, importance = TRUE)
+  pred=predict(rf.brandon,newdata=newdata5[-train,])
+  RMSE=sqrt(mean((pred-newdata5[-train, 'Total_salary'])^2))
+  brandon[i]=RMSE
+}
+
+#RMSE with Brandon's variables = 5707321
+brandon[which.min(brandon)]
+
+# (ALL VARIABLES) Running random forest with 500 trees for each mtry value
+random.forest=list()
+for(i in 1:47)
+{
+  rf <- randomForest(Total_salary~., data = nba, subset = train, mtry = i, importance = TRUE)
+  pred=predict(rf,newdata=nba[-train,])
+  RMSE=sqrt(mean((pred-nba[-train, 'Total_salary'])^2))
+  random.forest[i]=RMSE
+}
+
+#Lowest Random Forest RMSE with 500 trees
+random.forest[which.min(random.forest)]
+
+# Last time I ran it my lowest RMSE was 5.46 million with a 58.99% variance (mtry = 23)
+
+
+# ALL VARIABLES - Run random forest without specifying mtry value.
+rf.nomtry <- randomForest(Total_salary~., data = newdata5, subset = train, importance = TRUE)
+pred=predict(rf.nomtry,newdata=newdata5[-train,])
+rf.no.mtry.RMSE=sqrt(mean((pred-newdata5[-train, 'Total_salary'])^2))
+rf.no.mtry.RMSE
+#5.78 RMSE
+```
+
+### Neural Net
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+nsamp=floor(nrow(nba)*0.8)
+train=sample(1:nrow(nba), nsamp)
+
+
+# Neural network
+
+minv = rep(0,3)
+maxv = rep(0,3)
+
+#put the player names as indices and drop first 2 columns
+
+nba_std=nba[,-c(1,2)]
+
+# standardization of the data
+for(i in 1:3) 
+{
+  minv[i] = min(nba_std[[i]])
+  maxv[i] = max(nba_std[[i]])
+  nba_std[[i]] = (nba_std[[i]]-minv[i])/(maxv[i]-minv[i])
+}
+
+train_nba1=nba_std[train,]
+test_nba1=nba_std[-train,]
+
+### nn library
+library(nnet)
+
+###fit nn with just one x=food
+set.seed(2)
+nba_nn = nnet(Total_salary~.,train_nba1,size=3,decay=0.1,linout=T)
+summary(nba_nn)
+
+###get fits, print summary,  and plot fit
+nba_test_nn = predict(nba_nn,test_nba1)
+
+zlm = lm(Total_salary~.,train_nba1)
+fzlm = predict(zlm,test_nba1)
+temp = data.frame(y=test_nba1$Total_salary,fnn=nba_test_nn,flm=fzlm)
+pairs(temp)
+print("Correlation matrix for linear and NN with y")
+print(cor(temp))
+
+
+rmse_nba=sqrt(mean(nba_test_nn-test_nba1$Total_salary)^2)
+print(paste("RMSE when size=3 and decay=0.1:",rmse_nba))
+
+##################################################
+## Size and Decay
+
+### try four different fits
+
+set.seed(2)
+znn1 = nnet(Total_salary~.,train_nba1,size=3,decay=.5,linout=T)
+fznn1 = predict(znn1,test_nba1)
+rmse_nn1=sqrt(mean(fznn1-test_nba1$Total_salary)^2)
+print(paste("RMSE when size=3 and decay=0.5: ",rmse_nn1)) 
+#"RMSE when size=3 and decay=0.5:  1923435.43599598"
+
+znn2 = nnet(Total_salary~.,train_nba1,size=3,decay=.00001,linout=T)
+fznn2 = predict(znn2,test_nba1)
+rmse_nn2=sqrt(mean(fznn2-test_nba1$Total_salary)^2)
+print(paste("RMSE when size=3 and decay=0.00001:",rmse_nn2)) ##697,327
+#"RMSE when size=3 and decay=0.00001: 697327.549861047"
+
+
+znn3 = nnet(Total_salary~.,train_nba1,size=10,decay=.5,linout=T)
+fznn3 = predict(znn3,test_nba1)
+rmse_nn3=sqrt(mean(fznn3-test_nba1$Total_salary)^2)
+print(paste("RMSE when size=10 and decay=0.5:",rmse_nn3)) #1,981,812
+#"RMSE when size=10 and decay=0.5: 2548886.70887217"
+
+znn4 = nnet(Total_salary~.,train_nba1,size=10,decay=.00001,linout=T)
+fznn4 = predict(znn4,test_nba1)
+rmse_nn4=sqrt(mean(fznn4-test_nba1$Total_salary)^2)
+print(paste("RMSE when size=10 and decay=0.00001:",rmse_nn4)) #675,990
+
+
+## Check the best model for different sizes
+znn=list()
+fznn=list()
+rmse_nn=list()
+
+for(i in 1:20)
+{
+  znn=nnet(Total_salary~.,train_nba1,size=i,decay=.1,linout=T)
+  fznn = predict(znn,test_nba1)
+  rmse_nn[i]=sqrt(mean(fznn-test_nba1$Total_salary)^2)
+  print(paste("RMSE when size=",i," and decay=0.00001:",rmse_nn[i]))
+}
+
+
+size_nn=seq(1,20)
+
+plot(x=size_nn,y=rmse_nn,xlab = 'Size',ylab = 'RMSE')
+
+```
+### Boosting
+```{r}
+library(gbm)
+library(InformationValue)
+
+
+nsamp=floor(nrow(nba)*0.8)
+train=sample(1:nrow(nba), nsamp)
+
+nba_data11=nba[,-c(1,2)]
+train_nba2=nba[train,]
+test_nba2=nba[-train,]
+
+#Iteration with all the variables:
+
+boost_nba1 = gbm(Total_salary~., data= train_nba2, distribution = "gaussian", n.trees = 1000, shrinkage = 0.1)
+
+import_boost=data.frame(summary(boost_nba1))
+
+
+boost_pred_test = predict(boost_nba1, test_nba2,n.trees=1000,type="response",shrinkage=0.1)
+
+# RMSE:
+rmse_boost1= sqrt(mean((boost_pred_test-test_nba2$Total_salary)^2))
+rmse_boost1   ### 6,244,590
+
+
+### Removing less important features:
+
+
+
+# Iterations for no. of trees :
+
+i=1
+rmse_boost5=list()
+for(x in seq(100,5000,100)) 
+{
+  boost_nba5 = gbm(Total_salary~X.Minutes_Played_Per_Game+X.Points_Per_Game+X.Win_Shares+X.Games_Started+X.Value_over_Replacement_Player+Age +
+                    X.Free_Throw_Attempts_Per_Game+X.Assists_Per_Game+X.Field_Goals_Per_Game+ X.Usage_Percentage+X.Free_Throw_Attempt_Rate+
+                     X.3.Point_Field_Goal_Attempts_Per_Game+X.FG_p_on_3.Pt_FGAs.+X.Defensive_Box_Plus.Minus+X.Defensive_Rebounds_Per_Game+X3.Point_Attempt_Rate
+                   , data= train_nba2, distribution = "gaussian", n.trees = x, shrinkage = 0.01)
+  
+  boost_pred_test5 = predict(boost_nba5, test_nba2,n.trees=x,type="response",shrinkage=0.01)
+  
+  # RMSE:
+  rmse_boost5[i]= sqrt(mean((boost_pred_test5-test_nba2$Total_salary)^2))
+  print
+  print(paste("Size=",x,"; RMSE: ",rmse_boost5[i] ))
+  i=i+1
+}
+
+size_boost=seq(100,5000,100)
+
+plot(x=size_boost,y=rmse_boost5,xlab = '# Trees',ylab = 'RMSE')
+ #Best Iteration with shrinkage factor=0.01 and #Trees = 500 : 5,445,524
+
+# Best Iteration:
+
+boost_nba_best = gbm(Total_salary~X.Minutes_Played_Per_Game+X.Points_Per_Game+X.Win_Shares+X.Games_Started+X.Value_over_Replacement_Player+Age +
+                   X.Free_Throw_Attempts_Per_Game+X.Assists_Per_Game+X.Field_Goals_Per_Game+ X.Usage_Percentage+X.Free_Throw_Attempt_Rate+
+                   X.3.Point_Field_Goal_Attempts_Per_Game+X.FG_p_on_3.Pt_FGAs.+X.Defensive_Box_Plus.Minus+X.Defensive_Rebounds_Per_Game+X3.Point_Attempt_Rate
+                 , data= train_nba2, distribution = "gaussian", n.trees = 500, shrinkage = 0.01)
+
+df_boost=data.frame(summary(boost_nba_best))
+
+vsum=summary(boost_nba_best) 
+row.names(vsum)=NULL #drop varable names from rows.
+
+library(ggplot2)
+ggplot(vsum, aes(x=reorder(vsum$var, vsum$rel.inf), y=vsum$rel.inf)) + 
+  geom_bar(stat='identity') + 
+  labs(title="Variable Importance", 
+       y="Variable Importance",
+       x = "Variables") + 
+  theme(axis.text.x = element_text(angle=90, vjust=0.6))
+
+boost_nba_best = predict(boost_nba_best, test_nba2,n.trees=500,type="response",shrinkage=0.01)
+
+# RMSE:
+boost_nba_best= sqrt(mean((boost_nba_best-test_nba2$Total_salary)^2))
+boost_nba_best   
+
+```
