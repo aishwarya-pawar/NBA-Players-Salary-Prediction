@@ -35,12 +35,23 @@ https://www.basketball-reference.com/leagues/NBA_2018_advanced.html
 
 ## Findings:
 
-Model Summaries:
+- With almost all the models except neural networks, the RMSE (Root Mean Square Error) of ~ $5.2Mn was obtained with ~ 58%. Even after introducing non-linearity and interactions in the linear models, variable reduction (PCA) and with ensemble (random forest). 
+- However, with single layer neural nets, RMSE of 617K was obtained.
 
+So, what did we do next?
 
-
+We tried to work around it by clustering the players into different segments based on their performance parameters, which indirectly drive their salary (because salary would be unknown for the test dataset). However, the dataset only contains 550 players and due to smaller sample size, the clusters did not converge well. 
 
 ## Conclusion:
 
+Well, the results are quite obvious!
 
+- The salary distribution is quite skewed for NBA players. Only 4% of the players get paid very high salary (> $20Mn)
+- Due to the salary cap of the players, the error is always going to be very high. No model will be able to predict player's salary accurately.
+
+Remember, 
+
+"All models are wrong, but some are useful" - George Box
+
+And in our case, neural networks tunrned out to be a bit useful!
 
